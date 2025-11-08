@@ -47,8 +47,17 @@ source .venv/bin/activate  # macOS/Linux
 .venv\Scripts\activate     # Windows
 
 # 安装依赖
-pip install fastapi uvicorn httpx
+pip install fastapi uvicorn httpx python-dotenv
 ```
+
+### 配置环境变量
+
+```bash
+# 复制环境变量模板
+cp .env.example .env
+```
+
+编辑 `.env` 文件修改自己要改的变量即可。
 
 ### 启动服务
 
@@ -69,9 +78,6 @@ uvicorn anthropic_proxy:app --host 0.0.0.0 --port 8088 --reload
 ### 基础配置
 
 ```python
-# 上游目标服务器地址
-TARGET_BASE = "https://q.quuvv.cn"
-
 # 是否保留原始 Host 头（通常设为 False）
 PRESERVE_HOST = False
 ```

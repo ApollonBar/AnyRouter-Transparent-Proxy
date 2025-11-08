@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 import httpx
 import json
+import os
 from typing import Iterable
 from urllib.parse import urlparse
 
@@ -28,8 +30,11 @@ app = FastAPI(
 )
 
 # ===== 基础配置 =====
-
-TARGET_BASE = "https://q.quuvv.cn"
+# 主站：https://anyrouter.top
+# 备用：https://q.quuvv.cn
+load_dotenv()
+TARGET_BASE_URL = os.getenv("ANYROUTER_BASE_URL", "https://anyrouter.top")
+print(f"Base Url: {TARGET_BASE_URL}")
 PRESERVE_HOST = False  # 是否保留原始 Host
 
 # System prompt 替换配置
@@ -159,7 +164,7 @@ def process_request_body(body: bytes) -> bytes:
 async def proxy(path: str, request: Request):
     # 构造目标 URL
     query = request.url.query
-    target_url = f"{TARGET_BASE}/{path}"
+    target_url = f"{TARGET_BASE_URL}/{path}"
     if query:
         target_url += f"?{query}"
 
@@ -176,7 +181,7 @@ async def proxy(path: str, request: Request):
 
     # 设置 Host
     if not PRESERVE_HOST:
-        parsed = urlparse(TARGET_BASE)
+        parsed = urlparse(TARGET_BASE_URL)
         forward_headers["Host"] = parsed.netloc
 
     # 注入自定义 Header
