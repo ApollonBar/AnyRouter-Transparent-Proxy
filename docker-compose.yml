@@ -9,6 +9,7 @@ services:
     environment:
       # 可以在这里直接设置环境变量，或者使用 .env 文件
       - API_BASE_URL=${API_BASE_URL:-https://anyrouter.top}
+      - SYSTEM_PROMPT_REPLACEMENT=${SYSTEM_PROMPT_REPLACEMENT:-You are Claude Code, Anthropic's official CLI for Claude.}
     env_file:
       - .env  # 如果存在 .env 文件，会自动加载
     restart: unless-stopped

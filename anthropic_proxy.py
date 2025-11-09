@@ -40,8 +40,9 @@ PRESERVE_HOST = False  # 是否保留原始 Host
 # System prompt 替换配置
 # 设置为字符串以替换请求体中 system 数组的第一个元素的 text 内容
 # 设置为 None 则保持原样不修改
-SYSTEM_PROMPT_REPLACEMENT = "You are Claude Code, Anthropic's official CLI for Claude."  # 例如: "你是一个有用的AI助手"
-# SYSTEM_PROMPT_REPLACEMENT =  None
+# 通过环境变量 SYSTEM_PROMPT_REPLACEMENT 配置，默认为 None
+SYSTEM_PROMPT_REPLACEMENT = os.getenv("SYSTEM_PROMPT_REPLACEMENT")  # 例如: "你是一个有用的AI助手"
+print(f"System prompt replacement: {SYSTEM_PROMPT_REPLACEMENT}")
 
 HOP_BY_HOP_HEADERS = {
     "connection",
