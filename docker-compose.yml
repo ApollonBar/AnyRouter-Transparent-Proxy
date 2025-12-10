@@ -21,6 +21,11 @@ services:
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-your-secret-api-key-change-me}
       # 调试模式
       - DEBUG_MODE=${DEBUG_MODE:-false}
+      # 日志持久化
+      - LOG_PERSISTENCE_ENABLED=${LOG_PERSISTENCE_ENABLED:-true}
+      - LOG_STORAGE_PATH=${LOG_STORAGE_PATH:-data/logs}
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-7}
+      - LOG_DAILY_LIMIT=${LOG_DAILY_LIMIT:-1000}
       # 代理配置（可选）
       - HTTP_PROXY=${HTTP_PROXY:-}
       - HTTPS_PROXY=${HTTPS_PROXY:-}
@@ -29,6 +34,8 @@ services:
     volumes:
       # 挂载自定义 Header 配置文件（可选）
       - ./env/:/app/env/
+      # 持久化日志与数据
+      - ./data:/app/data
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "python", "-c", "import httpx; import os; port = os.getenv('PORT', '8088'); r = httpx.get(f'http://localhost:{port}/health', timeout=2); exit(0 if r.status_code == 200 else 1)" ]

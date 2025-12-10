@@ -10,6 +10,9 @@ from collections import defaultdict, deque
 from datetime import datetime
 from typing import Optional, Tuple
 
+from ..config import LOG_PERSISTENCE_ENABLED, LOG_STORAGE_PATH, LOG_RETENTION_DAYS, LOG_DAILY_LIMIT
+from .log_storage import LogStorage
+
 # ===== 统计数据收集器 =====
 # 全局统计数据（线程安全）
 stats_lock = asyncio.Lock()
@@ -44,6 +47,20 @@ time_window_stats = {
 # 日志流相关
 log_subscribers = set()  # SSE连接订阅者
 log_queue = asyncio.Queue(maxsize=1000)  # 日志消息队列
+
+# 持久化存储
+log_storage: Optional[LogStorage] = None
+if LOG_PERSISTENCE_ENABLED:
+    try:
+        log_storage = LogStorage(
+            storage_path=LOG_STORAGE_PATH,
+            daily_limit=LOG_DAILY_LIMIT,
+            retention_days=LOG_RETENTION_DAYS
+        )
+        print(f"[Log Storage] Persistence enabled, path: {LOG_STORAGE_PATH}, retention: {LOG_RETENTION_DAYS} days")
+    except Exception as e:
+        print(f"[Log Storage] Failed to init: {e}")
+        log_storage = None
 
 
 async def record_request_start(path: str, method: str, bytes_sent: int) -> str:
@@ -140,15 +157,64 @@ async def update_time_window_stats():
         })
 
 
+async def persist_log_entry(log_entry: dict) -> None:
+    """写入持久化存储（可配置关闭）"""
+    if not log_storage:
+        return
+    try:
+        await log_storage.write_log(log_entry)
+    except Exception as e:
+        print(f"[Log Storage] Failed to write log: {e}")
+
+
+async def get_recent_persisted_logs(limit: int = 20):
+    if not log_storage:
+        return []
+    try:
+        return await log_storage.get_recent_logs(limit=limit)
+    except Exception as e:
+        print(f"[Log Storage] Failed to load recent logs: {e}")
+        return []
+
+
+async def query_persisted_logs(
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    level: Optional[str] = None,
+    path_filter: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    if not log_storage:
+        return [], 0
+    try:
+        filters = {}
+        if level:
+            filters["level"] = level
+        if path_filter:
+            filters["path_filter"] = path_filter
+        return await log_storage.query_logs(
+            start_time=start_time,
+            end_time=end_time,
+            filters=filters,
+            limit=limit,
+            offset=offset
+        )
+    except Exception as e:
+        print(f"[Log Storage] Failed to query logs: {e}")
+        return [], 0
+
+
 async def broadcast_log_message(level: str, message: str, path: str = "", request_id: str = "", response_content: str = None):
     """广播日志消息到所有订阅者"""
+    current_time = time.time()
     log_entry = {
-        "timestamp": time.time(),
+        "timestamp": current_time,
         "level": level,
         "message": message,
         "path": path,
         "request_id": request_id,
-        "formatted_time": datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S"),
+        "formatted_time": datetime.fromtimestamp(current_time).strftime("%Y-%m-%d %H:%M:%S"),
         "response_content": response_content
     }
 
@@ -168,6 +234,8 @@ async def broadcast_log_message(level: str, message: str, path: str = "", reques
 
     except Exception as e:
         print(f"[Log Stream] Failed to broadcast log message: {e}")
+
+    await persist_log_entry(log_entry)
 
 
 async def log_producer():

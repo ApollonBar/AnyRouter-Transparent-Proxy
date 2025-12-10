@@ -168,6 +168,7 @@
             <div
               v-for="log in visibleLogs"
               :key="log._key"
+              :ref="el => setLogRef(log._key, el as HTMLDivElement)"
               :style="{ position: 'absolute', top: `${log._position}px`, width: '100%' }"
               class="px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors border-b border-gray-100 dark:border-gray-700"
             >
@@ -258,6 +259,17 @@
         </div>
       </div>
     </div>
+
+    <div class="flex justify-center">
+      <button
+        v-if="hasMoreHistory || isLoadingHistory"
+        @click="loadHistoryLogs()"
+        :disabled="isLoadingHistory"
+        class="mt-4 px-4 py-2 text-sm font-medium text-white bg-gray-800 rounded-lg hover:bg-gray-900 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {{ isLoadingHistory ? '加载中...' : '加载更多历史' }}
+      </button>
+    </div>
   </div>
 </template>
 
@@ -285,6 +297,9 @@ const searchTerm = ref('')
 const selectedLevels = ref<string[]>(['INFO', 'WARNING', 'ERROR'])
 const autoScroll = ref(true)
 const logs = ref<LogEntry[]>([])  // 改回普通 ref
+const historyOffset = ref(0)
+const hasMoreHistory = ref(true)
+const isLoadingHistory = ref(false)
 const connectionStatus = ref<'connected' | 'connecting' | 'disconnected'>('connecting')
 const eventSource = ref<EventSource | null>(null)
 const reconnectTimeout = ref<NodeJS.Timeout>()
@@ -309,9 +324,10 @@ const updateDisplayConnectionStatus = (status: 'connected' | 'connecting' | 'dis
 }
 
 // 虚拟滚动配置
-const ITEM_HEIGHT = 80 // 估算的每个日志条目高度
-const BUFFER_SIZE = 10 // 上下缓冲区大小
+const DEFAULT_ITEM_HEIGHT = 80 // 默认估算高度
+const BUFFER_PX = 400 // 视口上下缓冲像素
 const MAX_LOGS = 5000 // 最大保留日志数量
+const HISTORY_PAGE_SIZE = 200 // 单次拉取历史日志数量
 
 // 计算属性 - 使用 shallowRef 和缓存优化
 const filteredLogs = computed(() => {
@@ -357,13 +373,17 @@ const displayStats = ref({
   filteredLogsCount: 0
 })
 
+// 虚拟滚动测量
+const logHeights = ref<Record<string, number>>({})
+const logRefs = ref<Record<string, HTMLDivElement | null>>({})
+
 // 更新统计显示（防抖）
 const updateDisplayStats = debounce(() => {
-  displayStats.value.totalValidLogsCount = logs.value.filter(log =>
-    !log.type || !['connection', 'heartbeat'].includes(log.type)
-  ).length
+  const filtered = filteredLogs.value
 
-  displayStats.value.totalLevelCounts = logs.value.reduce(
+  displayStats.value.totalValidLogsCount = filtered.length
+
+  displayStats.value.totalLevelCounts = filtered.reduce(
     (acc, log) => {
       if (log.level && ['INFO', 'WARNING', 'ERROR'].includes(log.level)) {
         acc[log.level] = (acc[log.level] || 0) + 1
@@ -372,23 +392,6 @@ const updateDisplayStats = debounce(() => {
     },
     { INFO: 0, WARNING: 0, ERROR: 0 }
   )
-
-  // 计算过滤后的数量
-  let filtered = logs.value.filter(log =>
-    !log.type || !['connection', 'heartbeat'].includes(log.type)
-  )
-
-  if (selectedLevels.value.length > 0) {
-    filtered = filtered.filter(log => selectedLevels.value.includes(log.level))
-  }
-
-  if (searchTerm.value) {
-    const searchLower = searchTerm.value.toLowerCase()
-    filtered = filtered.filter(log =>
-      log.message.toLowerCase().includes(searchLower) ||
-      (log.path && log.path.toLowerCase().includes(searchLower))
-    )
-  }
 
   displayStats.value.filteredLogsCount = filtered.length
 }, 200)
@@ -407,37 +410,116 @@ const statusMessage = computed(() => {
 })
 
 // 监听数据变化，更新显示
-watch([logs, selectedLevels, searchTerm], updateDisplayStats, { deep: true })
+watch([logs, selectedLevels, searchTerm, filteredLogs], updateDisplayStats, { deep: true })
 
 // 虚拟滚动计算
 const scrollTop = ref(0)
 const containerHeight = ref(0) // 初始值为 0,会在 onMounted 中更新
 
-const totalHeight = computed(() => filteredLogs.value.length * ITEM_HEIGHT)
-
-const visibleRange = computed(() => {
-  const startIndex = Math.max(0, Math.floor(scrollTop.value / ITEM_HEIGHT) - BUFFER_SIZE)
-  const endIndex = Math.min(
-    filteredLogs.value.length,
-    startIndex + Math.ceil(containerHeight.value / ITEM_HEIGHT) + BUFFER_SIZE * 2
-  )
-  return { startIndex, endIndex }
-})
+const totalHeight = computed(() =>
+  filteredLogs.value.reduce((acc, log) => {
+    const key = getLogKey(log)
+    return acc + (logHeights.value[key] || DEFAULT_ITEM_HEIGHT)
+  }, 0)
+)
 
 // 生成稳定的唯一 key
 const getLogKey = (log: LogEntry) => {
-  return `${log.timestamp}_${log.level}_${log.request_id || 'no-id'}_${log.type || 'no-type'}`
+  const reqPart = log.request_id || 'no-id'
+  const typePart = log.type || 'no-type'
+  const msgPart = log.message || 'no-msg'
+  const pathPart = log.path || 'no-path'
+  return `${log.timestamp}_${log.level}_${reqPart}_${typePart}_${msgPart}_${pathPart}`
 }
 
-const visibleLogs = computed(() => {
-  return filteredLogs.value
-    .slice(visibleRange.value.startIndex, visibleRange.value.endIndex)
-    .map((log, index) => ({
-      ...log,
-      _position: visibleRange.value.startIndex * ITEM_HEIGHT + index * ITEM_HEIGHT,
-      _key: getLogKey(log)
-    }))
+const normalizeLogEntry = (log: LogEntry): LogEntry => ({
+  _expanded: false,
+  ...log,
+  level: (log.level || 'INFO') as LogEntry['level']
 })
+
+const mergeLogs = (incoming: LogEntry[], position: 'prepend' | 'append') => {
+  if (!incoming.length) return
+
+  const existingKeys = new Set(logs.value.map(getLogKey))
+  const normalized = incoming
+    .map(item => normalizeLogEntry(item))
+    .filter(item => {
+      const key = getLogKey(item)
+      if (existingKeys.has(key)) {
+        return false
+      }
+      existingKeys.add(key)
+      return true
+    })
+
+  if (!normalized.length) return
+
+  logs.value = position === 'prepend'
+    ? [...normalized, ...logs.value]
+    : [...logs.value, ...normalized]
+
+  if (logs.value.length > MAX_LOGS) {
+    logs.value = logs.value.slice(0, MAX_LOGS)
+  }
+
+  nextTick(measureVisible)
+}
+
+type RenderLog = LogEntry & { _position: number; _key: string }
+
+const setLogRef = (key: string, el: HTMLDivElement | null) => {
+  logRefs.value[key] = el
+  if (el) {
+    measureHeight(key)
+  }
+}
+
+const measureHeight = (key: string) => {
+  const el = logRefs.value[key]
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  if (!rect.height) return
+  const prev = logHeights.value[key] || DEFAULT_ITEM_HEIGHT
+  if (Math.abs(prev - rect.height) > 1) {
+    logHeights.value = { ...logHeights.value, [key]: rect.height }
+  }
+}
+
+const measureVisible = () => {
+  visibleLogs.value.forEach(log => measureHeight(log._key))
+}
+
+const visibleLogs = computed<RenderLog[]>(() => {
+  const result: RenderLog[] = []
+  const viewportStart = scrollTop.value - BUFFER_PX
+  const viewportEnd = scrollTop.value + containerHeight.value + BUFFER_PX
+
+  let offset = 0
+  for (const log of filteredLogs.value) {
+    const key = getLogKey(log)
+    const height = logHeights.value[key] || DEFAULT_ITEM_HEIGHT
+    const start = offset
+    const end = offset + height
+
+    if (end >= viewportStart && start <= viewportEnd) {
+      result.push({
+        ...log,
+        _position: start,
+        _key: key
+      })
+    }
+
+    offset = end
+  }
+
+  return result
+})
+
+watch(
+  () => visibleLogs.value.map(log => log._key),
+  () => nextTick(measureVisible)
+)
 
 // 方法
 const handleScroll = () => {
@@ -446,20 +528,59 @@ const handleScroll = () => {
     containerHeight.value = logContainer.value.clientHeight
 
     // 自动滚动检测
-    const { scrollTop, scrollHeight, clientHeight } = logContainer.value
-    const isAtBottom = scrollHeight - scrollTop <= clientHeight + 100
+    const { scrollTop: currentScrollTop, scrollHeight, clientHeight } = logContainer.value
+    const isAtBottom = scrollHeight - currentScrollTop <= clientHeight + 100
     autoScroll.value = isAtBottom
   }
 }
 
 const toggleLogDetail = (log: LogEntry) => {
-  // 使用 map 创建新数组，确保 Vue 的响应式系统能检测到变化
+  const targetKey = getLogKey(log)
   logs.value = logs.value.map(item => {
-    if (item === log) {
+    if (getLogKey(item) === targetKey) {
       return { ...item, _expanded: !item._expanded }
     }
     return item
   })
+  nextTick(measureVisible)
+}
+
+const loadHistoryLogs = async (isInitial = false) => {
+  if (isLoadingHistory.value) return
+  if (!hasMoreHistory.value && !isInitial) return
+
+  const nextOffset = isInitial ? 0 : historyOffset.value
+  if (isInitial) {
+    hasMoreHistory.value = true
+    historyOffset.value = 0
+  }
+
+  isLoadingHistory.value = true
+  try {
+    const response = await logsApi.getHistoryLogs({
+      limit: HISTORY_PAGE_SIZE,
+      offset: nextOffset
+    })
+
+    const fetched = response.logs || []
+    mergeLogs(fetched, 'append')
+
+    const pagination = response.pagination
+    if (pagination) {
+      historyOffset.value = pagination.offset + fetched.length
+      hasMoreHistory.value = pagination.has_more
+    } else {
+      historyOffset.value = nextOffset + fetched.length
+      hasMoreHistory.value = fetched.length === HISTORY_PAGE_SIZE
+    }
+  } catch (error) {
+    console.error('[Logs] 加载历史日志失败:', error)
+    if (isInitial) {
+      hasMoreHistory.value = false
+    }
+  } finally {
+    isLoadingHistory.value = false
+  }
 }
 
 const clearLogs = () => {
@@ -491,28 +612,8 @@ const connectSSE = () => {
       try {
         const logData = JSON.parse(event.data)
 
-        // 创建新的日志对象，并添加展开状态标记（确保是响应式的）
-        const logEntry: LogEntry = {
-          ...logData,
-          _expanded: false
-        }
-
-        // 检查是否已存在相同的日志（避免重复）
-        const exists = logs.value.some(log =>
-          log.timestamp === logEntry.timestamp &&
-          log.message === logEntry.message
-        )
-
-        // 批量更新日志列表，减少响应式更新次数
-        if (!exists) {
-          // 创建新数组，触发一次性更新
-          const newLogs = [logEntry, ...logs.value]
-          if (newLogs.length > MAX_LOGS) {
-            logs.value = newLogs.slice(0, MAX_LOGS)
-          } else {
-            logs.value = newLogs
-          }
-        }
+        const logEntry: LogEntry = normalizeLogEntry(logData)
+        mergeLogs([logEntry], 'prepend')
 
         // 自动滚动到底部
         if (autoScroll.value && logContainer.value) {
@@ -587,9 +688,12 @@ const handleResize = () => {
 onMounted(() => {
   // 初始化统计数据
   updateDisplayStats()
+  // 恢复历史日志
+  loadHistoryLogs(true)
   // 初始化容器高度
   nextTick(() => {
     updateContainerHeight()
+    measureVisible()
   })
   // 监听窗口大小变化
   window.addEventListener('resize', handleResize)

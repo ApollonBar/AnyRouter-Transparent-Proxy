@@ -106,6 +106,16 @@ export interface LogEntry {
   _expanded?: boolean
 }
 
+export interface LogHistoryResponse {
+  logs: LogEntry[]
+  pagination: {
+    total: number
+    limit: number
+    offset: number
+    has_more: boolean
+  }
+}
+
 // 路由类型
 export interface RouteMeta {
   title: string

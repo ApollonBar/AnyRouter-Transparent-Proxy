@@ -79,9 +79,15 @@ COPY --from=frontend-builder /app/static ./static/
 # 复制环境配置目录
 # COPY env/ ./env/
 
+# 持久化数据目录（挂载到宿主机 ./data）
+RUN mkdir -p /app/data
+
 # 设置目录权限
 RUN chown -R appuser:appuser /app
 USER appuser
+
+# 暴露可挂载的数据目录
+VOLUME ["/app/data"]
 
 # 暴露端口（注意：host 网络模式下不起实际作用）
 EXPOSE ${PORT}

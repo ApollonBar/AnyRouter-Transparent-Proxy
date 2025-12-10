@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Response, Request
+from fastapi import APIRouter, HTTPException, Depends, Response, Request, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -25,7 +25,8 @@ from ..config import (
     SYSTEM_PROMPT_BLOCK_INSERT_IF_NOT_EXIST,
     DEBUG_MODE,
     PORT,
-    CUSTOM_HEADERS
+    CUSTOM_HEADERS,
+    LOG_PERSISTENCE_ENABLED
 )
 from ..services.stats import (
     request_stats,
@@ -36,7 +37,10 @@ from ..services.stats import (
     format_bytes,
     calculate_percentiles,
     get_time_filtered_data,
-    broadcast_log_message
+    broadcast_log_message,
+    query_persisted_logs,
+    get_recent_persisted_logs,
+    log_storage
 )
 
 # 创建路由器
@@ -324,6 +328,43 @@ async def get_errors(
         raise HTTPException(status_code=500, detail=f"获取错误信息失败: {str(e)}")
 
 
+@router.get("/api/admin/logs/history")
+async def get_history_logs(
+    authenticated: bool = Depends(verify_dashboard_api_key),
+    start_time: Optional[datetime] = None,
+    end_time: Optional[datetime] = None,
+    level: Optional[str] = None,
+    path_filter: Optional[str] = None,
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0)
+):
+    """获取持久化历史日志"""
+    if not LOG_PERSISTENCE_ENABLED or not log_storage:
+        raise HTTPException(status_code=503, detail="Log persistence is disabled")
+
+    try:
+        logs, total = await query_persisted_logs(
+            start_time=start_time,
+            end_time=end_time,
+            level=level,
+            path_filter=path_filter,
+            limit=limit,
+            offset=offset
+        )
+
+        return {
+            "logs": logs,
+            "pagination": {
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+                "has_more": offset + limit < total
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取历史日志失败: {str(e)}")
+
+
 @router.get("/api/admin/logs/stream")
 async def stream_logs(
     authenticated: bool = Depends(verify_dashboard_api_key),
@@ -349,29 +390,45 @@ async def stream_logs(
             # 发送最近的历史日志（最近20条）
             try:
                 recent_logs = []
-                # 从log_queue获取最近的消息
-                temp_queue = asyncio.Queue()
+                use_storage_history = False
 
-                # 获取队列中的现有消息
-                while not log_queue.empty():
+                if LOG_PERSISTENCE_ENABLED and log_storage:
                     try:
-                        log_entry = await asyncio.wait_for(log_queue.get_nowait(), timeout=0.1)
-                        recent_logs.append(log_entry)
-                        await temp_queue.put(log_entry)
-                    except asyncio.TimeoutError:
-                        break
+                        recent_logs = await get_recent_persisted_logs(limit=50)
+                        use_storage_history = bool(recent_logs)
+                    except Exception as storage_error:
+                        print(f"[Log Stream] Failed to load persisted history: {storage_error}")
 
-                # 恢复队列
-                while not temp_queue.empty():
-                    await log_queue.put(await temp_queue.get_nowait())
+                if not recent_logs:
+                    # 从log_queue获取最近的消息
+                    temp_queue = asyncio.Queue()
 
-                # 发送最近的历史日志
-                for log_entry in recent_logs[-20:]:
+                    # 获取队列中的现有消息
+                    while not log_queue.empty():
+                        try:
+                            log_entry = await asyncio.wait_for(log_queue.get_nowait(), timeout=0.1)
+                            recent_logs.append(log_entry)
+                            await temp_queue.put(log_entry)
+                        except asyncio.TimeoutError:
+                            break
+
+                    # 恢复队列
+                    while not temp_queue.empty():
+                        await log_queue.put(await temp_queue.get_nowait())
+
+                # 存储返回的顺序为新->旧，需翻转为旧->新
+                if use_storage_history:
+                    recent_logs = list(reversed(recent_logs))
+
+                filtered_recent_logs = []
+                for log_entry in recent_logs:
                     if level_filter and log_entry.get("level") != level_filter.upper():
                         continue
                     if path_filter and path_filter.lower() not in log_entry.get("path", "").lower():
                         continue
+                    filtered_recent_logs.append(log_entry)
 
+                for log_entry in filtered_recent_logs[-20:]:
                     yield json.dumps(log_entry, ensure_ascii=False)
 
             except Exception as e:
