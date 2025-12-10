@@ -67,8 +67,8 @@ RUN pip config set global.index-url https://mirrors.tuna.tsinghua.edu.cn/pypi/we
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# 复制后端应用代码
-COPY backend/app.py ./backend/
+# 复制后端应用代码（整个 backend 包）
+COPY backend/ ./backend/
 
 # 复制环境变量示例文件（可选）
 # COPY .env.example .env
@@ -91,4 +91,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import httpx; import os; port = os.getenv('PORT', '8088'); r = httpx.get(f'http://localhost:{port}/health', timeout=2); exit(0 if r.status_code == 200 else 1)"
 
 # 启动应用（端口通过环境变量 PORT 配置）
-CMD ["python", "backend/app.py"]
+# 使用模块方式启动以支持相对导入
+CMD ["python", "-m", "backend.app"]
