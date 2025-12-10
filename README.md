@@ -4,7 +4,9 @@
 
 ## 效果图
 
-<img width="3754" height="2110" alt="VS Code 终于能用上 CC 插件了" src="https://github.com/user-attachments/assets/6a492f30-43ed-4ba1-ad9f-15801b356f7a" />
+![效果图](./screenshot/效果图.png)
+
+![仪表板页面](./screenshot/仪表板页面.png)
 
 
 ## 目录
@@ -98,11 +100,13 @@ docker run -d --name anthropic-proxy -p 8088:8088 anthropic-proxy
 
 # 自定义目标 URL
 docker run -d --name anthropic-proxy -p 8088:8088 \
-  -e API_BASE_URL=https://q.quuvv.cn \
+  -e API_BASE_URL=https://anyrouter.top \
   anthropic-proxy
 ```
 
 服务将在 `http://localhost:8088` 启动，然后在 Claude Code 中配置此地址即可。
+
+管理面板通过 `http://localhost:8088/admin` 访问。
 
 ### 本地运行
 
@@ -119,10 +123,10 @@ pip install fastapi uvicorn httpx python-dotenv
 cp .env.example .env
 
 # 启动服务（从项目根目录运行）
-python backend/app.py
+python -m backend.app
 ```
 
-服务将在 `http://0.0.0.0:8088` 启动。
+服务将在 `http://localhost:8088` 启动。
 
 **注意**：本地开发时，如果需要使用 Web 管理面板，需要先构建前端：
 
@@ -134,6 +138,8 @@ cd ..
 ```
 
 构建产物会输出到 `static/` 目录（该目录已在 `.gitignore` 中忽略）。
+
+管理面板通过 `http://localhost:8088/admin` 访问。
 
 ## 配置说明
 
